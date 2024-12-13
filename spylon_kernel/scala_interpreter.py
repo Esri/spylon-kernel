@@ -24,12 +24,12 @@ scala_intp = None
 # Default Spark application name
 DEFAULT_APPLICATION_NAME = "spylon-kernel"
 
-
-def init_spark(conf=None, capture_stderr=False):
+def init_spark(spark_session=None, conf=None, capture_stderr=False):
     """Initializes a SparkSession.
 
     Parameters
     ----------
+    spark_session: optional spark session in case it already exists
     conf: spylon.spark.SparkConfiguration, optional
         Spark configuration to apply to the session
     capture_stderr: bool, optional
@@ -47,8 +47,17 @@ def init_spark(conf=None, capture_stderr=False):
     # Ensure we have the correct classpath settings for the repl to work.
     os.environ.setdefault('SPARK_SUBMIT_OPTS', '-Dscala.usejavacp=true')
 
-    if conf is None:
-        conf = spylon.spark.launcher.SparkConfiguration()
+    if spark_session is None:
+        if conf is None:
+            conf = spylon.spark.launcher.SparkConfiguration()
+    else:
+        scf = spark_session.sparkContext.getConf()
+        allc = scf.getAll()
+
+        conf_dict = {}
+        for index, element in enumerate(allc):
+            conf_dict[index] = element
+        conf = spylon.spark.launcher.SparkConfiguration(spark_conf = conf_dict)
 
     # Create a temp directory that gets cleaned up on exit
     output_dir = os.path.abspath(tempfile.mkdtemp())
@@ -67,8 +76,9 @@ def init_spark(conf=None, capture_stderr=False):
     # Get the application name from the spylon configuration object
     application_name = conf.conf._conf_dict.get('spark.app.name', DEFAULT_APPLICATION_NAME)
 
-    # Force spylon to "discover" the spark python path so that we can import pyspark
-    conf._init_spark()
+    if spark_session is None:
+        # Force spylon to "discover" the spark python path so that we can import pyspark
+        conf._init_spark()
 
     # Patch the pyspark.java_gateway.Popen instance to force it to pipe to the parent
     # process so that we can catch all output from the Scala interpreter and Spark
@@ -95,15 +105,17 @@ def init_spark(conf=None, capture_stderr=False):
         return spark_jvm_proc
     pyspark.java_gateway.Popen = Popen
 
-    # Create a new spark context using the configuration
-    spark_context = conf.spark_context(application_name)
+    if spark_session is None:
+        # Create a new spark context using the configuration
+        spark_context = conf.spark_context(application_name)
 
     # pyspark is in the python path after creating the context
     from pyspark.sql import SparkSession
     from spylon.spark.utils import SparkJVMHelpers
 
     # Create the singleton SparkState
-    spark_session = SparkSession(spark_context)
+    if spark_session is None:
+        spark_session = SparkSession(spark_context)
     spark_jvm_helpers = SparkJVMHelpers(spark_session._sc)
     spark_state = SparkState(spark_session, spark_jvm_helpers, spark_jvm_proc)
     return spark_state
@@ -147,7 +159,7 @@ def get_web_ui_url(sc):
 
 
 # noinspection PyProtectedMember
-def initialize_scala_interpreter():
+def initialize_scala_interpreter(spark_session = None):
     """
     Instantiates the scala interpreter via py4j and pyspark.
 
@@ -160,7 +172,7 @@ def initialize_scala_interpreter():
     ScalaInterpreter
     """
     # Initialize Spark first if it isn't already
-    spark_session, spark_jvm_helpers, spark_jvm_proc = init_spark()
+    spark_session, spark_jvm_helpers, spark_jvm_proc = init_spark(spark_session)
 
     # Get handy JVM references
     jvm = spark_session._jvm
@@ -182,7 +194,7 @@ def initialize_scala_interpreter():
 
     # Configure the classpath and temp directory created by init_spark
     # as the shared path for REPL generated artifacts
-    output_dir = jconf.get("spark.repl.class.outputDir")
+    #output_dir = jconf.get("spark.repl.class.outputDir")
     try:
         # Spark 2.2.1+
         jars = jvm.org.apache.spark.util.Utils.getLocalUserJarsForShell(jconf).mkString(":")
@@ -190,11 +202,19 @@ def initialize_scala_interpreter():
         # Spark <2.2.1
         jars = jvm.org.apache.spark.util.Utils.getUserJars(jconf, True).mkString(":")
 
+    '''
     interp_arguments = spark_jvm_helpers.to_scala_list(
         ["-Yrepl-class-based", "-Yrepl-outdir", output_dir,
          "-classpath", jars, "-deprecation:false"
         ]
     )
+    '''
+    interp_arguments = spark_jvm_helpers.to_scala_list(
+        ["-Yrepl-class-based",
+         "-classpath", jars, "-deprecation:false"
+         ]
+    )
+
     settings = jvm.scala.tools.nsc.Settings()
     settings.processArguments(interp_arguments, True)
 
@@ -217,12 +237,12 @@ def initialize_scala_interpreter():
         @transient val sc = spark.sparkContext
     """)
     # Import Spark packages for convenience
-    intp.interpret('\n'.join([
-        "import org.apache.spark.SparkContext._",
-        "import spark.implicits._",
-        "import spark.sql",
-        "import org.apache.spark.sql.functions._"
-    ]))
+    #intp.interpret('\n'.join([
+    #    "import org.apache.spark.SparkContext._",
+    #    "import spark.implicits._",
+    #    "import spark.sql",
+    #    "import org.apache.spark.sql.functions._"
+    #]))
     # Clear the print writer stream
     bytes_out.reset()
 
@@ -296,6 +316,7 @@ class ScalaInterpreter(object):
 
         # Threads that perform blocking reads on the stdout/stderr
         # streams from the py4j JVM process.
+        '''
         if spark_state.spark_jvm_proc.stdout is not None:
             self.stdout_reader = threading.Thread(target=self._read_stream,
                 daemon=True,
@@ -315,6 +336,7 @@ class ScalaInterpreter(object):
                 )
             )
             self.stderr_reader.start()
+        '''
 
     def register_stdout_handler(self, handler):
         """Registers a handler for the Scala stdout stream.
@@ -554,7 +576,7 @@ class ScalaInterpreter(object):
         #       better results for the function in question
         return scala_type[-1]
 
-def get_scala_interpreter():
+def get_scala_interpreter(spark_session = None):
     """Get the scala interpreter instance.
 
     If the instance has not yet been created, create it.
@@ -565,6 +587,6 @@ def get_scala_interpreter():
     """
     global scala_intp
     if scala_intp is None:
-        scala_intp = initialize_scala_interpreter()
+        scala_intp = initialize_scala_interpreter(spark_session)
 
     return scala_intp
