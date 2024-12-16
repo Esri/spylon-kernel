@@ -316,7 +316,7 @@ class ScalaInterpreter(object):
 
         # Threads that perform blocking reads on the stdout/stderr
         # streams from the py4j JVM process.
-        '''
+
         if spark_state.spark_jvm_proc.stdout is not None:
             self.stdout_reader = threading.Thread(target=self._read_stream,
                 daemon=True,
@@ -336,7 +336,6 @@ class ScalaInterpreter(object):
                 )
             )
             self.stderr_reader.start()
-        '''
 
     def register_stdout_handler(self, handler):
         """Registers a handler for the Scala stdout stream.
