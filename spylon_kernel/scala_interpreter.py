@@ -208,8 +208,14 @@ def initialize_scala_interpreter():
     getattr(Main, "sparkContext_$eq")(jspark_session.sparkContext())
 
     # Instantiate a Scala interpreter
-    intp = jvm.scala.tools.nsc.interpreter.IMain(settings, jprint_writer)
-    intp.initializeSynchronous()
+    try:
+        # Scala 2.12
+        intp = jvm.scala.tools.nsc.interpreter.IMain(settings, jprint_writer)
+        intp.initializeSynchronous()
+    except:
+        # Scala 2.13
+        repl_reporter = jvm.scala.tools.nsc.interpreter.shell.ReplReporterImpl(settings, jprint_writer)
+        intp = jvm.scala.tools.nsc.interpreter.IMain(settings, repl_reporter)
 
     # Ensure that sc and spark are bound in the interpreter context.
     intp.interpret("""
